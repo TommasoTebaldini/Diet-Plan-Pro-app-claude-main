@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { FileText, Download, Calendar, ChevronRight, BookOpen, Utensils, Apple, Heart, Bookmark, BookmarkCheck, ArrowUpDown, Star, Printer } from 'lucide-react'
+import { FileText, Download, Calendar, ChevronRight, BookOpen, Utensils, Apple, Heart, Bookmark, BookmarkCheck, ArrowUpDown, Star } from 'lucide-react'
 
 const TYPE_META = {
   // Diet plans
@@ -48,245 +48,238 @@ function isNew(doc, lastSeen) {
   return new Date(doc.created_at) > new Date(lastSeen)
 }
 
-function parseJsonSafely(value) {
-  if (typeof value !== 'string') return value
-  try {
-    return JSON.parse(value)
-  } catch {
-    return value
+
+// ─── Helper: parse JSON safely, handling double-encoded strings ────────────────
+function deepParse(value, maxDepth = 3) {
+  let v = value
+  for (let i = 0; i < maxDepth; i++) {
+    if (typeof v !== 'string') break
+    try { v = JSON.parse(v) } catch { break }
   }
+  return (v && typeof v === 'object') ? v : {}
 }
 
-function normalizeDati(value) {
-  // Some rows are stored as double-encoded JSON strings.
-  let current = value
-  for (let i = 0; i < 3; i += 1) {
-    const parsed = parseJsonSafely(current)
-    if (parsed === current) break
-    current = parsed
-  }
-  return current && typeof current === 'object' ? current : {}
+// ─── Print-style header used by all document types ────────────────────────────
+function DocHeader({ color, bg, icon, category, title, subtitle }) {
+  return (
+    <div style={{ background: bg, border: `2px solid ${color}30`, borderRadius: 14, padding: '16px 20px', marginBottom: 20 }}>
+      <div style={{ fontSize: 11, color: color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span>{icon}</span>{category}
+      </div>
+      {title && <div style={{ fontSize: 20, fontWeight: 700, color: '#1a1a1a', lineHeight: 1.2 }}>{title}</div>}
+      {subtitle && <div style={{ fontSize: 13, color: '#666', marginTop: 4 }}>{subtitle}</div>}
+    </div>
+  )
 }
 
-function extractMealDays(rawMeals) {
-  const parsed = normalizeDati(rawMeals)
-  if (Array.isArray(parsed)) return parsed
-  if (Array.isArray(parsed?.meals)) return parsed.meals
-  if (Array.isArray(parsed?.giorni)) return parsed.giorni
-  if (Array.isArray(parsed?.piano?.meals)) return parsed.piano.meals
-  if (Array.isArray(parsed?.piano?.giorni)) return parsed.piano.giorni
-  return []
+// ─── Reusable data table ──────────────────────────────────────────────────────
+function DataTable({ title, rows }) {
+  const validRows = rows.filter(([, v]) => v !== '' && v !== null && v !== undefined && v !== false)
+  if (!validRows.length) return null
+  return (
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
+      {title && <div style={{ background: '#1a7f5a', color: 'white', padding: '9px 16px', fontSize: 13, fontWeight: 700 }}>{title}</div>}
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <tbody>
+          {validRows.map(([k, v], i) => (
+            <tr key={k} style={{ background: i % 2 === 0 ? 'white' : '#f9fafb', borderBottom: '1px solid #f3f4f6' }}>
+              <td style={{ padding: '8px 16px', fontSize: 13, color: '#555', fontWeight: 600, width: '45%' }}>{k}</td>
+              <td style={{ padding: '8px 16px', fontSize: 13, color: '#1a1a1a' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
-function normalizeToArray(value) {
-  if (Array.isArray(value)) return value.filter(Boolean)
-  if (typeof value === 'string') {
-    const parsed = parseJsonSafely(value)
-    if (Array.isArray(parsed)) return parsed.filter(Boolean)
-    return value
-      .split(/\r?\n|,/)
-      .map(item => item.trim())
-      .filter(Boolean)
-  }
-  return []
+// ─── Reusable portate / items table ──────────────────────────────────────────
+function PortateTable({ portate }) {
+  if (!portate?.length) return null
+  return (
+    <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
+      <div style={{ background: '#1a7f5a', color: 'white', padding: '9px 16px', fontSize: 13, fontWeight: 700 }}>🍽️ Portate / Menu</div>
+      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <thead>
+          <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+            {['Portata', 'Porzione', 'Note'].map(h => (
+              <th key={h} style={{ padding: '8px 14px', fontSize: 12, color: '#666', textAlign: 'left', fontWeight: 600 }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {portate.map((p, i) => (
+            <tr key={i} style={{ background: i % 2 === 0 ? 'white' : '#f9fafb', borderBottom: '1px solid #f3f4f6' }}>
+              <td style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, color: '#1a7f5a' }}>{p.nome || ''}</td>
+              <td style={{ padding: '8px 14px', fontSize: 13 }}>{p.porzione || ''}</td>
+              <td style={{ padding: '8px 14px', fontSize: 12, color: p.note ? '#444' : '#bbb', fontStyle: p.note ? 'normal' : 'italic' }}>{p.note || '—'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
-function pickText(...values) {
-  for (const value of values) {
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  }
-  return ''
-}
-
-
+// ─── MAIN DOCUMENT RENDERER ──────────────────────────────────────────────────
 function PrintDocRenderer({ doc }) {
-  // Robust: detect from BOTH tipo AND dati shape
-  const tipo = (doc.tipo || doc.type || '').toLowerCase()
-  const dati = normalizeDati(doc.dati_raw)
+  const tipo = (doc.tipo || doc.type || '').toLowerCase().trim()
+  const dati = deepParse(doc.dati_raw)
 
-  // ── MUST / Questionario ─────────────────────────────────────────────────────
-  const qData = typeof dati.questionario === 'object' && dati.questionario !== null ? dati.questionario : dati
-  const qScoreRaw = qData.score ?? qData.punteggio ?? dati.score ?? dati.punteggio
-  const qScoreNum = Number(qScoreRaw)
-  const hasNumericScore = Number.isFinite(qScoreNum)
-  const isQuestionario = tipo === 'questionario' || hasNumericScore || !!dati.questionario
-  if (isQuestionario) {
-    const scoreColor = hasNumericScore ? (qScoreNum >= 3 ? '#dc2626' : qScoreNum >= 1 ? '#d97706' : '#16a34a') : '#16a34a'
+  // ── Questionario MUST / clinico ───────────────────────────────────────────
+  if (tipo === 'questionario' || dati.questionario !== undefined) {
+    const scoreColor = (dati.score ?? 0) >= 3 ? '#dc2626' : (dati.score ?? 0) >= 1 ? '#d97706' : '#16a34a'
+    const scoreBg   = (dati.score ?? 0) >= 3 ? '#fef2f2' : (dati.score ?? 0) >= 1 ? '#fffbeb' : '#f0fdf4'
     return (
       <div>
-        <div style={{ background: '#f5f3ff', border: '2px solid #d8b4fe', borderRadius: 14, padding: 20, marginBottom: 20, textAlign: 'center' }}>
-          <div style={{ fontSize: 12, color: '#7c3aed', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
-            Questionario {pickText(qData.nome, qData.questionario, typeof dati.questionario === 'string' ? dati.questionario : '') || 'Clinico'}
-          </div>
-          <div style={{ fontSize: 32, fontWeight: 800, color: scoreColor, marginBottom: 6 }}>
-            Score: {qScoreRaw ?? '—'}
-          </div>
-          {pickText(qData.label, qData.esito, dati.label) && <div style={{ fontSize: 16, fontWeight: 600, color: scoreColor }}>{pickText(qData.label, qData.esito, dati.label)}</div>}
+        <DocHeader color={scoreColor} bg={scoreBg} icon="📋" category={`Questionario ${dati.questionario || ''}`} title={doc.nota || doc.title} />
+        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          <div style={{ fontSize: 48, fontWeight: 900, color: scoreColor, lineHeight: 1 }}>{dati.score ?? '—'}</div>
+          <div style={{ fontSize: 14, color: scoreColor, fontWeight: 700, marginTop: 4 }}>{dati.label || ''}</div>
         </div>
-        {pickText(qData.desc, qData.descrizione, dati.desc, doc.content) && <p style={{ fontSize: 14, lineHeight: 1.8, color: '#333', whiteSpace: 'pre-wrap' }}>{pickText(qData.desc, qData.descrizione, dati.desc, doc.content)}</p>}
-        {doc.nota && doc.nota !== doc.title && <p style={{ marginTop: 12, fontSize: 14, color: '#666', fontStyle: 'italic' }}>{doc.nota}</p>}
+        {dati.desc && <p style={{ fontSize: 14, lineHeight: 1.8, color: '#333', background: '#f9fafb', borderRadius: 10, padding: 14 }}>{dati.desc}</p>}
       </div>
     )
   }
 
-  // ── Consiglio nutrizionale ───────────────────────────────────────────────────
-  const consiglioData = typeof dati.consiglio === 'object' && dati.consiglio !== null ? dati.consiglio : dati
-  const consentiti = normalizeToArray(consiglioData.alimenti_consentiti || consiglioData.alimentiConsentiti)
-  const limitare = normalizeToArray(consiglioData.alimenti_limitare || consiglioData.alimentiDaLimitare)
-  const evitare = normalizeToArray(consiglioData.alimenti_evitare || consiglioData.alimentiDaEvitare)
-  const isConsiglio = tipo === 'consiglio' || tipo === 'advice' || !!consiglioData.consiglio_id || !!consiglioData.consiglio_nome || !!consiglioData.indicazioni
-  if (isConsiglio) {
+  // ── Consiglio nutrizionale ────────────────────────────────────────────────
+  if (tipo === 'consiglio' || dati.consiglio_id || dati.consiglio_nome) {
+    const nome = dati.consiglio_nome || doc.title
     return (
       <div>
-        <div style={{ background: 'linear-gradient(135deg, #fff0f0, #fff5f5)', border: '2px solid #fecaca', borderRadius: 14, padding: 20, marginBottom: 20 }}>
-          <div style={{ fontSize: 11, color: '#dc2626', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Consiglio Nutrizionale</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: '#991b1b' }}>{pickText(consiglioData.consiglio_nome, consiglioData.titolo, doc.title)}</div>
-        </div>
-        {pickText(consiglioData.indicazioni, consiglioData.descrizione, consiglioData.testo) && <div style={{ marginBottom: 14 }}>
-          <p style={{ fontSize: 13, fontWeight: 700, color: '#1a7f5a', marginBottom: 8, textTransform: 'uppercase', letterSpacing: .5 }}>Indicazioni</p>
-          <p style={{ fontSize: 14, lineHeight: 1.8 }}>{pickText(consiglioData.indicazioni, consiglioData.descrizione, consiglioData.testo)}</p>
-        </div>}
-        {consentiti.length > 0 && (
+        <DocHeader color="#dc2626" bg="#fff0f0" icon="💊" category="Consiglio Nutrizionale" title={nome} />
+        {dati.descrizione && <p style={{ fontSize: 14, lineHeight: 1.8, marginBottom: 12 }}>{dati.descrizione}</p>}
+        {dati.indicazioni && <p style={{ fontSize: 14, lineHeight: 1.8, marginBottom: 12 }}>{dati.indicazioni}</p>}
+        {dati.alimenti_consentiti?.length > 0 && (
           <div style={{ marginBottom: 14 }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: '#16a34a', marginBottom: 8, textTransform: 'uppercase', letterSpacing: .5 }}>✅ Alimenti consentiti</p>
-            <ul style={{ paddingLeft: 20, fontSize: 14, lineHeight: 2 }}>{consentiti.map((a, i) => <li key={i}>{a}</li>)}</ul>
+            <ul style={{ paddingLeft: 20, fontSize: 14, lineHeight: 2 }}>{dati.alimenti_consentiti.map((a, i) => <li key={i}>{a}</li>)}</ul>
           </div>
         )}
-        {limitare.length > 0 && (
+        {dati.alimenti_limitare?.length > 0 && (
           <div style={{ marginBottom: 14 }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: '#d97706', marginBottom: 8, textTransform: 'uppercase', letterSpacing: .5 }}>⚠️ Da limitare</p>
-            <ul style={{ paddingLeft: 20, fontSize: 14, lineHeight: 2 }}>{limitare.map((a, i) => <li key={i}>{a}</li>)}</ul>
+            <ul style={{ paddingLeft: 20, fontSize: 14, lineHeight: 2 }}>{dati.alimenti_limitare.map((a, i) => <li key={i}>{a}</li>)}</ul>
           </div>
         )}
-        {evitare.length > 0 && (
+        {dati.alimenti_evitare?.length > 0 && (
           <div style={{ marginBottom: 14 }}>
             <p style={{ fontSize: 13, fontWeight: 700, color: '#dc2626', marginBottom: 8, textTransform: 'uppercase', letterSpacing: .5 }}>🚫 Da evitare</p>
-            <ul style={{ paddingLeft: 20, fontSize: 14, lineHeight: 2 }}>{evitare.map((a, i) => <li key={i}>{a}</li>)}</ul>
+            <ul style={{ paddingLeft: 20, fontSize: 14, lineHeight: 2 }}>{dati.alimenti_evitare.map((a, i) => <li key={i}>{a}</li>)}</ul>
           </div>
         )}
-        {pickText(consiglioData.note, consiglioData.nota) && <div style={{ padding: '10px 14px', background: '#fffbeb', borderRadius: 8, borderLeft: '3px solid #f59e0b', fontSize: 13, color: '#92400e' }}>💡 {pickText(consiglioData.note, consiglioData.nota)}</div>}
-        {doc.content && !pickText(consiglioData.indicazioni, consiglioData.descrizione, consiglioData.testo) && <p style={{ fontSize: 14, lineHeight: 1.8 }}>{doc.content}</p>}
+        {dati.note && <div style={{ padding: '10px 14px', background: '#fffbeb', borderRadius: 8, borderLeft: '3px solid #f59e0b', fontSize: 13, color: '#92400e' }}>💡 {dati.note}</div>}
       </div>
     )
   }
 
-  // ── Calcoli clinici (DCA, diabete, chetogenica, renale, ecc.) ──────────────
-  const calcData = dati.calcolo || dati.rapporto_ic || dati.panoramica || null
-  const isCalcolo = calcData || tipo === 'dca' || tipo === 'diabete' || tipo === 'chetogenica' || tipo === 'renale' || tipo === 'pediatria' || tipo === 'disfagia' || tipo === 'pancreas' || tipo === 'sport'
-  if (isCalcolo) {
-    const LABEL_MAP = {
-      peso: 'Peso (kg)', altezza: 'Altezza (cm)', eta: 'Età',
-      sesso: 'Sesso', peso_ideale: 'Peso ideale (kg)',
-      imc: 'IMC', bmi: 'BMI',
-      fabbisogno: 'Fabbisogno calorico', kcal: 'Calorie',
-      proteine: 'Proteine (g)', carboidrati: 'Carboidrati (g)', grassi: 'Grassi (g)',
-      tipo: 'Tipo', tdd: 'TDD (UI)', metodo: 'Metodo',
-      attivita: 'Attività fisica', storia_paziente: 'Anamnesi',
-      storia_peso: 'Storia peso', famiglia: 'Anamnesi familiare',
-      npasti: 'N° pasti', luogo: 'Luogo pasti', appetito: 'Appetito',
-    }
-    const renderCalcTable = (obj, label) => {
-      if (!obj || typeof obj !== 'object') return null
-      const entries = Object.entries(obj).filter(([, v]) => v !== '' && v !== null && v !== undefined && typeof v !== 'object')
-      const nested = Object.entries(obj).filter(([, v]) => v && typeof v === 'object')
-      if (entries.length === 0 && nested.length === 0) return null
-      return (
-        <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
-          {label && <div style={{ background: '#1a7f5a', color: 'white', padding: '9px 16px', fontSize: 13, fontWeight: 700 }}>{label}</div>}
-          {entries.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <tbody>
-                {entries.map(([k, v], i) => (
-                  <tr key={k} style={{ background: i % 2 === 0 ? 'white' : '#f9fafb', borderBottom: '1px solid #f3f4f6' }}>
-                    <td style={{ padding: '8px 16px', fontSize: 13, color: '#555', fontWeight: 600, width: '45%' }}>
-                      {LABEL_MAP[k] || k.replace(/_/g, ' ').replace(/\w/g, l => l.toUpperCase())}
-                    </td>
-                    <td style={{ padding: '8px 16px', fontSize: 13, color: '#1a1a1a' }}>{String(v)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {nested.map(([k, v]) => (
-            <div key={k} style={{ padding: '0 0 8px 0' }}>
-              {renderCalcTable(v, LABEL_MAP[k] || k.replace(/_/g, ' ').replace(/\w/g, l => l.toUpperCase()))}
-            </div>
-          ))}
-        </div>
-      )
-    }
+  // ── Ristorazione / menu scolastico ────────────────────────────────────────
+  // Struttura reale: dati.piano.portate[], dati.valutazione.{tipo,coperti,...}
+  if (tipo === 'ristorazione') {
+    const val = deepParse(dati.valutazione) || {}
+    const piano = deepParse(dati.piano) || {}
+    const portate = piano.portate || val.portate || []
     return (
       <div>
-        {doc.nota && (
-          <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 12, padding: 14, marginBottom: 18 }}>
-            <p style={{ fontSize: 15, fontWeight: 600, color: '#0369a1' }}>{doc.nota}</p>
+        <DocHeader color="#0891b2" bg="#ecfeff" icon="🍽️" category="Menu Ristorazione" title={doc.nota || doc.title} />
+        <DataTable title="📋 Struttura" rows={[
+          ['Tipo utenza', piano.tipo || val.tipo],
+          ['Utenza', piano.utenza || val.utenza],
+          ['Coperti', piano.coperti || val.coperti],
+          ['Kcal stimate', piano.kcal || val.kcal],
+          ['Diete speciali', piano.diete || val.diete],
+          ['Allergeni', piano.allergeni || val.allergeni],
+          ['Note struttura', piano.note_struttura || val.note_struttura],
+        ]} />
+        <PortateTable portate={portate} />
+        {(piano.note_generali || val.note_generali) && (
+          <div style={{ padding: '10px 14px', background: '#fffbeb', borderRadius: 8, borderLeft: '3px solid #f59e0b', fontSize: 13, color: '#92400e' }}>
+            💡 {piano.note_generali || val.note_generali}
           </div>
         )}
-        {calcData ? renderCalcTable(calcData, '📊 Dati clinici') : renderCalcTable(dati, '📊 Dati clinici')}
       </div>
     )
   }
 
-  // ── Ristorazione / menu scolastico ──────────────────────────────────────────
-  // Ristorazione: portate are in dati.piano.portate
-  const ristPiano = dati.piano || dati.valutazione || dati.menu || dati
-  const portate = ristPiano?.portate || ristPiano?.pietanze || ristPiano?.voci_menu || []
-  const isRistorazione = tipo === 'ristorazione' || Array.isArray(portate) && portate.length > 0
-  if (isRistorazione) {
-    const ristData = ristPiano
+  // ── Pediatria ─────────────────────────────────────────────────────────────
+  if (tipo === 'pediatria') {
+    const paz = deepParse(dati.paziente) || {}
+    const piano = deepParse(dati.piano) || {}
+    const pasti = Array.isArray(dati.pasti) ? dati.pasti : []
     return (
       <div>
-        {doc.nota && (
-          <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 12, padding: 14, marginBottom: 18 }}>
-            <p style={{ fontSize: 15, fontWeight: 600, color: '#0369a1' }}>{doc.nota}</p>
-          </div>
-        )}
-        {(ristData.tipo || ristData.utenza || ristData.coperti || ristData.utenza) && (
+        <DocHeader color="#7c3aed" bg="#f5f3ff" icon="👶" category="Schema Nutrizionale Pediatrico" title={doc.nota || doc.title} />
+        <DataTable title="👤 Dati paziente" rows={Object.entries(paz).filter(([, v]) => v)} />
+        <DataTable title="📋 Piano" rows={Object.entries(piano).filter(([, v]) => v)} />
+        {pasti.length > 0 && (
           <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
-            <div style={{ background: '#1a7f5a', color: 'white', padding: '9px 16px', fontSize: 13, fontWeight: 700 }}>📋 Informazioni struttura</div>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <tbody>
-                {[['Tipo', ristData.tipo], ['Utenza', ristData.utenza], ['Coperti', ristData.coperti], ['Kcal', ristData.kcal], ['Diete speciali', ristData.diete], ['Allergeni', ristData.allergeni], ['Note struttura', ristData.note_struttura]].filter(([, v]) => v).map(([k, v], i) => (
-                  <tr key={k} style={{ background: i % 2 === 0 ? 'white' : '#f9fafb', borderBottom: '1px solid #f3f4f6' }}>
-                    <td style={{ padding: '8px 16px', fontSize: 13, color: '#555', fontWeight: 600, width: '40%' }}>{k}</td>
-                    <td style={{ padding: '8px 16px', fontSize: 13 }}>{v}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {portate.length > 0 && (
-          <div style={{ border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
-            <div style={{ background: '#1a7f5a', color: 'white', padding: '9px 16px', fontSize: 13, fontWeight: 700 }}>🍽️ Portate</div>
+            <div style={{ background: '#1a7f5a', color: 'white', padding: '9px 16px', fontSize: 13, fontWeight: 700 }}>🍼 Schema pasti</div>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
                 <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
-                  {['Portata', 'Porzione', 'Note'].map(h => (
+                  {['Pasto', 'Orario', 'Alimenti'].map(h => (
                     <th key={h} style={{ padding: '8px 14px', fontSize: 12, color: '#666', textAlign: 'left', fontWeight: 600 }}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {portate.map((p, i) => (
+                {pasti.map((p, i) => (
                   <tr key={i} style={{ background: i % 2 === 0 ? 'white' : '#f9fafb', borderBottom: '1px solid #f3f4f6' }}>
                     <td style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, color: '#1a7f5a' }}>{p.nome || ''}</td>
-                    <td style={{ padding: '8px 14px', fontSize: 13 }}>{p.porzione || p.quantita || ''}</td>
-                    <td style={{ padding: '8px 14px', fontSize: 12, color: '#666', fontStyle: (p.note || p.descrizione) ? 'normal' : 'italic' }}>{p.note || p.descrizione || '—'}</td>
+                    <td style={{ padding: '8px 14px', fontSize: 13, color: '#666' }}>{p.ora || ''}</td>
+                    <td style={{ padding: '8px 14px', fontSize: 13 }}>
+                      {Array.isArray(p.items) ? p.items.map(it => `${it.nome} ${it.qt || ''}${it.misura || 'g'}`).join(', ') :
+                       Array.isArray(p.alimenti) ? p.alimenti.join(', ') :
+                       p.descrizione || ''}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-        {ristData.note_generali && <div style={{ padding: '10px 14px', background: '#fffbeb', borderRadius: 8, borderLeft: '3px solid #f59e0b', fontSize: 13, color: '#92400e' }}>💡 {ristData.note_generali}</div>}
       </div>
     )
   }
 
-  // ── Generic fallback: smart formatted renderer ──────────────────────────────
-  const parsedContent = typeof doc.content === 'string' ? parseJsonSafely(doc.content) : null
-  const contentIsJsonObject = parsedContent && typeof parsedContent === 'object'
+  // ── Calcoli clinici: chetogenica, renale, diabete, dca, sport, pancreas, disfagia ──
+  const CALCOLO_LABELS = {
+    peso: 'Peso (kg)', altezza: 'Altezza (cm)', eta: 'Età', sesso: 'Sesso',
+    peso_ideale: 'Peso ideale (kg)', imc: 'IMC', bmi: 'BMI',
+    fabbisogno: 'Fabbisogno kcal', kcal: 'Kcal/die',
+    proteine: 'Proteine (g)', carboidrati: 'Carboidrati (g)', grassi: 'Grassi (g)',
+    tipo: 'Tipo', tdd: 'TDD (UI)', metodo: 'Metodo',
+    attivita: 'Attività fisica', npasti: 'N° pasti', luogo: 'Luogo pasti',
+    appetito: 'Appetito', allergie: 'Allergie',
+  }
+  const ICONE_TIPO = { chetogenica: '🥑', renale: '🫘', diabete: '💉', dca: '🧠', sport: '🏋️', pancreas: '🫀', disfagia: '🍵' }
+  const calcTypes = ['chetogenica','renale','diabete','dca','sport','pancreas','disfagia']
+  const calcData = dati.calcolo || dati.rapporto_ic || dati.panoramica || (calcTypes.includes(tipo) ? dati : null)
+
+  if (calcData) {
+    const icon = ICONE_TIPO[tipo] || '📊'
+    const flatEntries = Object.entries(calcData)
+      .filter(([, v]) => v !== '' && v !== null && v !== undefined && typeof v !== 'object')
+      .map(([k, v]) => [CALCOLO_LABELS[k] || k.replace(/_/g, ' '), v])
+    const nested = Object.entries(calcData).filter(([, v]) => v && typeof v === 'object' && !Array.isArray(v))
+    return (
+      <div>
+        <DocHeader color="#0891b2" bg="#f0f9ff" icon={icon} category={tipo.charAt(0).toUpperCase() + tipo.slice(1)} title={doc.nota || doc.title} />
+        {flatEntries.length > 0 && (
+          <DataTable title="📊 Dati clinici" rows={flatEntries} />
+        )}
+        {nested.map(([k, v]) => {
+          const entries = Object.entries(v).filter(([, vv]) => vv !== '' && vv !== null && vv !== undefined && typeof vv !== 'object').map(([kk, vv]) => [CALCOLO_LABELS[kk] || kk.replace(/_/g, ' '), vv])
+          return entries.length > 0 ? <DataTable key={k} title={k.replace(/_/g, ' ')} rows={entries} /> : null
+        })}
+      </div>
+    )
+  }
+
+  // ── Fallback: testo normale o struttura generica ──────────────────────────
+  const hasContent = doc.content && doc.content.trim()
+  const hasDati = dati && Object.keys(dati).length > 0
+
   return (
     <div>
       {doc.nota && doc.nota !== doc.title && (
@@ -294,110 +287,23 @@ function PrintDocRenderer({ doc }) {
           <p style={{ fontSize: 15, color: '#166534' }}>{doc.nota}</p>
         </div>
       )}
-      {doc.content && !contentIsJsonObject
+      {hasContent
         ? <p style={{ fontSize: 15, lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>{doc.content}</p>
-        : contentIsJsonObject
-          ? <SmartJsonRenderer data={parsedContent} />
-        : Object.keys(dati).length > 0
-          ? <SmartJsonRenderer data={dati} />
+        : hasDati
+          ? <DataTable title="Contenuto" rows={Object.entries(dati).filter(([, v]) => v !== '' && v !== null && typeof v !== 'object').map(([k, v]) => [k.replace(/_/g, ' '), v])} />
           : <p style={{ color: '#999', textAlign: 'center', marginTop: 40 }}>Nessun contenuto disponibile</p>
       }
     </div>
   )
 }
 
-// ─── Smart renderer: formats any JSON object in a human-readable way ──────────
-function SmartJsonRenderer({ data, depth = 0 }) {
-  if (!data || typeof data !== 'object') {
-    return <span style={{ fontSize: 14 }}>{String(data)}</span>
-  }
-
-  if (Array.isArray(data)) {
-    if (data.length === 0) return null
-    // Array of objects → table
-    if (typeof data[0] === 'object' && data[0] !== null) {
-      const keys = Object.keys(data[0]).filter(k => data.some(r => r[k] !== '' && r[k] !== null && r[k] !== undefined))
-      if (keys.length > 0) {
-        return (
-          <div style={{ border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden', marginBottom: 12 }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#f9fafb' }}>
-                  {keys.map(k => (
-                    <th key={k} style={{ padding: '7px 12px', fontSize: 11, color: '#666', textAlign: 'left', fontWeight: 600, textTransform: 'uppercase', borderBottom: '1px solid #e5e7eb' }}>
-                      {k.replace(/_/g, ' ')}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.map((row, i) => (
-                  <tr key={i} style={{ background: i % 2 === 0 ? 'white' : '#f9fafb', borderBottom: '1px solid #f3f4f6' }}>
-                    {keys.map(k => (
-                      <td key={k} style={{ padding: '7px 12px', fontSize: 13 }}>
-                        {typeof row[k] === 'object' ? JSON.stringify(row[k]) : String(row[k] ?? '—')}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )
-      }
-    }
-    // Array of primitives → list
-    return (
-      <ul style={{ paddingLeft: 20, fontSize: 14, lineHeight: 2 }}>
-        {data.map((item, i) => <li key={i}>{String(item)}</li>)}
-      </ul>
-    )
-  }
-
-  // Object → key-value table
-  const entries = Object.entries(data).filter(([, v]) => v !== '' && v !== null && v !== undefined)
-  if (entries.length === 0) return null
-
-  return (
-    <div style={{ marginBottom: depth === 0 ? 0 : 12 }}>
-      {entries.map(([k, v]) => (
-        <div key={k} style={{ marginBottom: 10 }}>
-          {typeof v === 'object' ? (
-            <>
-              <p style={{ fontSize: 12, fontWeight: 700, color: '#1a7f5a', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
-                {k.replace(/_/g, ' ')}
-              </p>
-              <div style={{ paddingLeft: 12, borderLeft: '3px solid #e6f5ee' }}>
-                <SmartJsonRenderer data={v} depth={depth + 1} />
-              </div>
-            </>
-          ) : (
-            <div style={{ display: 'flex', gap: 12, padding: '6px 0', borderBottom: '1px solid #f3f4f6' }}>
-              <span style={{ fontSize: 12, color: '#666', fontWeight: 600, width: '40%', flexShrink: 0 }}>
-                {k.replace(/_/g, ' ').replace(/\w/g, l => l.toUpperCase())}
-              </span>
-              <span style={{ fontSize: 13, color: '#1a1a1a' }}>{String(v)}</span>
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-const MEAL_LABELS = {
-  colazione: { label: 'Colazione', emoji: '☀️' },
-  spuntino_mattina: { label: 'Spuntino mattina', emoji: '🍎' },
-  pranzo: { label: 'Pranzo', emoji: '🍽️' },
-  spuntino_pomeriggio: { label: 'Spuntino pomeriggio', emoji: '🥤' },
-  cena: { label: 'Cena', emoji: '🌙' },
-}
 
 function MealPlanRenderer({ mealsData, title, dataString }) {
-  const days = extractMealDays(mealsData)
-  if (days.length === 0) {
-    return <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Piano non disponibile</p>
-  }
+  let days = []
+  try {
+    const parsed = typeof mealsData === 'string' ? JSON.parse(mealsData) : mealsData
+    days = Array.isArray(parsed) ? parsed : []
+  } catch { return <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Piano non disponibile</p> }
 
   return (
     <div style={{ fontFamily: 'Georgia, serif' }}>
@@ -489,78 +395,7 @@ function MealPlanRenderer({ mealsData, title, dataString }) {
 function DocModal({ doc, onClose, bookmarked, onToggleBookmark }) {
   if (!doc) return null
   const meta = TYPE_META[doc.type] || TYPE_META.document
-  const hasMealPlan = extractMealDays(doc.meals_data).length > 0
-  const contentRef = useRef(null)
-
-  function handlePrint() {
-    const content = contentRef.current
-    if (!content) return
-    const printWin = window.open('', '_blank', 'width=900,height=700')
-    const dateStr = new Date(doc.published_at || doc.created_at).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' })
-    printWin.document.write(`
-      <!DOCTYPE html>
-      <html lang="it">
-      <head>
-        <meta charset="UTF-8"/>
-        <title>${doc.title}</title>
-        <style>
-          * { box-sizing: border-box; margin: 0; padding: 0; }
-          body { font-family: 'Georgia', serif; color: #1a1a1a; background: white; padding: 0; }
-          @media print {
-            body { padding: 0; }
-            .no-print { display: none !important; }
-            @page { margin: 18mm 15mm; }
-          }
-          .print-page { max-width: 800px; margin: 0 auto; padding: 32px 40px 48px; }
-          /* Header */
-          .print-header { border-bottom: 3px solid #1a7f5a; padding-bottom: 20px; margin-bottom: 28px; }
-          .print-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
-          .print-logo { font-size: 11px; color: #1a7f5a; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; }
-          .print-date { font-size: 12px; color: #666; }
-          .print-title { font-size: 26px; font-weight: 700; color: #0d5c3a; margin-bottom: 4px; line-height: 1.2; }
-          .print-subtitle { font-size: 14px; color: #666; font-style: italic; }
-          /* Footer */
-          .print-footer { border-top: 1px solid #e5e7eb; margin-top: 40px; padding-top: 14px; font-size: 11px; color: #999; display: flex; justify-content: space-between; }
-          /* Content passthrough */
-          table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
-          th { background: #f9fafb; padding: 8px 14px; font-size: 12px; color: #555; text-align: left; font-weight: 700; border-bottom: 2px solid #e5e7eb; text-transform: uppercase; letter-spacing: .5px; }
-          td { padding: 8px 14px; font-size: 13px; border-bottom: 1px solid #f3f4f6; }
-          tr:nth-child(even) td { background: #f9fafb; }
-          ul, ol { padding-left: 22px; font-size: 14px; line-height: 2; }
-          p { font-size: 14px; line-height: 1.8; margin-bottom: 10px; }
-          h1,h2,h3 { color: #0d5c3a; margin-bottom: 8px; }
-          .btn-print { display: inline-block; margin: 0 auto 24px; padding: 10px 28px; background: #1a7f5a; color: white; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; font-family: inherit; }
-          .btn-print:hover { background: #0d5c3a; }
-        </style>
-      </head>
-      <body>
-        <div class="print-page">
-          <div class="no-print" style="text-align:center; padding: 16px 0 8px;">
-            <button class="btn-print" onclick="window.print()">🖨️ Stampa / Salva PDF</button>
-          </div>
-          <div class="print-header">
-            <div class="print-header-top">
-              <div class="print-logo">NutriPlan Pro</div>
-              <div class="print-date">${dateStr}</div>
-            </div>
-            <div class="print-title">${doc.title}</div>
-            <div class="print-subtitle">${meta.label}</div>
-          </div>
-          ${content.innerHTML}
-          <div class="print-footer">
-            <span>NutriPlan Pro — documento condiviso dal dietista</span>
-            <span>${dateStr}</span>
-          </div>
-        </div>
-        <script>
-          // Auto-trigger print after load for convenience
-          // window.onload = () => window.print()
-        <\/script>
-      </body>
-      </html>
-    `)
-    printWin.document.close()
-  }
+  const isPiano = doc.source === 'piano'
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 99999, display: 'flex', flexDirection: 'column', background: 'white' }}>
@@ -577,18 +412,11 @@ function DocModal({ doc, onClose, bookmarked, onToggleBookmark }) {
         >
           {bookmarked ? <BookmarkCheck size={18} /> : <Bookmark size={18} />}
         </button>
-        <button
-          onClick={handlePrint}
-          title="Stampa / Salva PDF"
-          style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 10, width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'white', flexShrink: 0 }}
-        >
-          <Printer size={18} />
-        </button>
       </div>
 
       {/* Content */}
-      <div ref={contentRef} style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 40px', maxWidth: 800, width: '100%', margin: '0 auto' }}>
-        {hasMealPlan ? (
+      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 40px', maxWidth: 800, width: '100%', margin: '0 auto' }}>
+        {doc.meals_data ? (
           <MealPlanRenderer mealsData={doc.meals_data} title={doc.title} dataString={doc.data_piano} />
         ) : doc.file_url ? (
           <div style={{ textAlign: 'center', padding: '40px 0' }}>
@@ -661,7 +489,6 @@ export default function DocumentsPage() {
 
           for (const n of notes || []) {
             const tipo = (n.tipo || '').toLowerCase().trim()
-            const datiObj = normalizeDati(n.dati)
 
             // Direct tipo → TYPE_META key mapping
             const TYPE_META_KEYS_SET = new Set(['diet','dieta','piano','chetogenica','renale','diabete','advice','consiglio','ristorazione','pediatria','disfagia','pancreas','sport','questionario','dca','document','referto','education','educazione','recipe','ricetta'])
@@ -680,15 +507,27 @@ export default function DocumentsPage() {
             }
             // Use tipo directly if it has a TYPE_META entry, otherwise lookup, otherwise use tipo itself
             const type = TYPE_META_KEYS_SET.has(tipo) ? tipo : (tipoToKey[tipo] || tipo || 'document')
-            const titleFromDati = datiObj?.titolo || datiObj?.title || datiObj?.nome
             const title = n.nota || titleFromDati ||
               (n.tipo ? n.tipo.charAt(0).toUpperCase() + n.tipo.slice(1) : 'Documento')
 
             // Extract readable content from dati
             let content = ''
-            const mealsData = extractMealDays(datiObj)
-            content = datiObj.content || datiObj.contenuto || datiObj.testo ||
-                      datiObj.descrizione || datiObj.text || datiObj.desc || ''
+            let mealsData = null
+
+            if (n.dati) {
+              // dati may be stored as a double-encoded JSON string — always parse it first
+              let datiObj = n.dati
+              if (typeof datiObj === 'string') {
+                try { datiObj = JSON.parse(datiObj) } catch { datiObj = {} }
+              }
+              content = datiObj.content || datiObj.contenuto || datiObj.testo ||
+                        datiObj.descrizione || datiObj.text || datiObj.desc || ''
+              if (datiObj.meals || datiObj.giorni) {
+                mealsData = datiObj.meals || datiObj.giorni
+              }
+              // Store parsed object for renderer
+              n._dati_parsed = datiObj
+            }
 
             allDocs.push({
               id: `note_${n.id}`,
@@ -698,10 +537,10 @@ export default function DocumentsPage() {
               tipo: n.tipo,
               nota: n.nota,
               content,
-              dati_raw: datiObj,
+              dati_raw: n._dati_parsed || n.dati,
               meals_data: mealsData,
-              file_url: datiObj.file_url || datiObj.pdf_url || null,
-              tags: Array.isArray(datiObj.tags) ? datiObj.tags : [],
+              file_url: n.dati?.file_url || n.dati?.pdf_url || null,
+              tags: n.dati?.tags || [],
               visible: true,
               published_at: n.created_at,
               created_at: n.created_at,
@@ -743,19 +582,7 @@ export default function DocumentsPage() {
           .order('created_at', { ascending: false })
 
         for (const d of patientDocs || []) {
-          const rawDati = normalizeDati(d.dati || d.data || d.payload)
-          const mealsData = extractMealDays(d.meals_data || d.meals || rawDati)
-          allDocs.push({
-            ...d,
-            type: d.type || d.tipo || 'document',
-            title: d.title || d.titolo || rawDati.titolo || rawDati.title || 'Documento',
-            content: d.content || d.contenuto || rawDati.content || rawDati.testo || rawDati.descrizione || '',
-            dati_raw: Object.keys(rawDati).length > 0 ? rawDati : d.dati_raw,
-            meals_data: mealsData,
-            file_url: d.file_url || rawDati.file_url || rawDati.pdf_url || null,
-            tags: Array.isArray(d.tags) ? d.tags : (Array.isArray(rawDati.tags) ? rawDati.tags : []),
-            published_at: d.published_at || d.created_at,
-          })
+          allDocs.push({ ...d, published_at: d.published_at || d.created_at })
         }
 
       } catch (e) {
