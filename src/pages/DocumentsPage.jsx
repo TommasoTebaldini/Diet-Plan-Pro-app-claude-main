@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
-import { FileText, Download, Calendar, ChevronRight, BookOpen, Utensils, Apple, Heart, Bookmark, BookmarkCheck, ArrowUpDown, Star } from 'lucide-react'
+import { FileText, Download, Calendar, ChevronRight, BookOpen, Utensils, Apple, Heart, Bookmark, BookmarkCheck, ArrowUpDown, Star, Printer } from 'lucide-react'
 
 const TYPE_META = {
   // Diet plans
@@ -490,6 +490,77 @@ function DocModal({ doc, onClose, bookmarked, onToggleBookmark }) {
   if (!doc) return null
   const meta = TYPE_META[doc.type] || TYPE_META.document
   const hasMealPlan = extractMealDays(doc.meals_data).length > 0
+  const contentRef = useRef(null)
+
+  function handlePrint() {
+    const content = contentRef.current
+    if (!content) return
+    const printWin = window.open('', '_blank', 'width=900,height=700')
+    const dateStr = new Date(doc.published_at || doc.created_at).toLocaleDateString('it-IT', { day: 'numeric', month: 'long', year: 'numeric' })
+    printWin.document.write(`
+      <!DOCTYPE html>
+      <html lang="it">
+      <head>
+        <meta charset="UTF-8"/>
+        <title>${doc.title}</title>
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { font-family: 'Georgia', serif; color: #1a1a1a; background: white; padding: 0; }
+          @media print {
+            body { padding: 0; }
+            .no-print { display: none !important; }
+            @page { margin: 18mm 15mm; }
+          }
+          .print-page { max-width: 800px; margin: 0 auto; padding: 32px 40px 48px; }
+          /* Header */
+          .print-header { border-bottom: 3px solid #1a7f5a; padding-bottom: 20px; margin-bottom: 28px; }
+          .print-header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 8px; }
+          .print-logo { font-size: 11px; color: #1a7f5a; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; }
+          .print-date { font-size: 12px; color: #666; }
+          .print-title { font-size: 26px; font-weight: 700; color: #0d5c3a; margin-bottom: 4px; line-height: 1.2; }
+          .print-subtitle { font-size: 14px; color: #666; font-style: italic; }
+          /* Footer */
+          .print-footer { border-top: 1px solid #e5e7eb; margin-top: 40px; padding-top: 14px; font-size: 11px; color: #999; display: flex; justify-content: space-between; }
+          /* Content passthrough */
+          table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
+          th { background: #f9fafb; padding: 8px 14px; font-size: 12px; color: #555; text-align: left; font-weight: 700; border-bottom: 2px solid #e5e7eb; text-transform: uppercase; letter-spacing: .5px; }
+          td { padding: 8px 14px; font-size: 13px; border-bottom: 1px solid #f3f4f6; }
+          tr:nth-child(even) td { background: #f9fafb; }
+          ul, ol { padding-left: 22px; font-size: 14px; line-height: 2; }
+          p { font-size: 14px; line-height: 1.8; margin-bottom: 10px; }
+          h1,h2,h3 { color: #0d5c3a; margin-bottom: 8px; }
+          .btn-print { display: inline-block; margin: 0 auto 24px; padding: 10px 28px; background: #1a7f5a; color: white; border: none; border-radius: 8px; font-size: 15px; cursor: pointer; font-family: inherit; }
+          .btn-print:hover { background: #0d5c3a; }
+        </style>
+      </head>
+      <body>
+        <div class="print-page">
+          <div class="no-print" style="text-align:center; padding: 16px 0 8px;">
+            <button class="btn-print" onclick="window.print()">🖨️ Stampa / Salva PDF</button>
+          </div>
+          <div class="print-header">
+            <div class="print-header-top">
+              <div class="print-logo">NutriPlan Pro</div>
+              <div class="print-date">${dateStr}</div>
+            </div>
+            <div class="print-title">${doc.title}</div>
+            <div class="print-subtitle">${meta.label}</div>
+          </div>
+          ${content.innerHTML}
+          <div class="print-footer">
+            <span>NutriPlan Pro — documento condiviso dal dietista</span>
+            <span>${dateStr}</span>
+          </div>
+        </div>
+        <script>
+          // Auto-trigger print after load for convenience
+          // window.onload = () => window.print()
+        <\/script>
+      </body>
+      </html>
+    `)
+    printWin.document.close()
+  }
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 99999, display: 'flex', flexDirection: 'column', background: 'white' }}>
@@ -506,10 +577,17 @@ function DocModal({ doc, onClose, bookmarked, onToggleBookmark }) {
         >
           {bookmarked ? <BookmarkCheck size={18} /> : <Bookmark size={18} />}
         </button>
+        <button
+          onClick={handlePrint}
+          title="Stampa / Salva PDF"
+          style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 10, width: 38, height: 38, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'white', flexShrink: 0 }}
+        >
+          <Printer size={18} />
+        </button>
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 40px', maxWidth: 800, width: '100%', margin: '0 auto' }}>
+      <div ref={contentRef} style={{ flex: 1, overflowY: 'auto', padding: '20px 20px 40px', maxWidth: 800, width: '100%', margin: '0 auto' }}>
         {hasMealPlan ? (
           <MealPlanRenderer mealsData={doc.meals_data} title={doc.title} dataString={doc.data_piano} />
         ) : doc.file_url ? (

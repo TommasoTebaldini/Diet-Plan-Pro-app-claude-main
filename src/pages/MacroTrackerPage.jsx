@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, createPortal } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { searchFoods, searchByBarcode } from '../lib/foodSearch'
@@ -71,6 +71,19 @@ export default function MacroTrackerPage() {
   const searchRef = useRef(null)
   const searchCacheRef = useRef(new Map())
   const latestSearchIdRef = useRef(0)
+  const [, forceUpdate] = useState(0)
+
+  // Reposition portal dropdown on scroll/resize
+  useEffect(() => {
+    if (!results.length) return
+    const handler = () => forceUpdate(n => n + 1)
+    window.addEventListener('scroll', handler, true)
+    window.addEventListener('resize', handler)
+    return () => {
+      window.removeEventListener('scroll', handler, true)
+      window.removeEventListener('resize', handler)
+    }
+  }, [results.length])
 
   useEffect(() => { loadLog() }, [date])
 
@@ -439,12 +452,24 @@ export default function MacroTrackerPage() {
                           </div>
                         )}
 
-                        {/* Dropdown results */}
-                        {!selected && results.length > 0 && (
-                          <div style={{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, zIndex: 200, background: 'var(--surface)', border: '1.5px solid var(--border)', borderRadius: 12, boxShadow: 'var(--shadow-md)', maxHeight: 260, overflowY: 'auto' }}>
+                        {/* Dropdown results — rendered in a portal to avoid overflow:hidden clipping */}
+                        {!selected && results.length > 0 && searchRef.current && createPortal(
+                          <div style={{
+                            position: 'fixed',
+                            top: searchRef.current.getBoundingClientRect().bottom + 4,
+                            left: searchRef.current.getBoundingClientRect().left,
+                            width: searchRef.current.getBoundingClientRect().width,
+                            zIndex: 99999,
+                            background: 'var(--surface, #fff)',
+                            border: '1.5px solid var(--border, #e5e7eb)',
+                            borderRadius: 12,
+                            boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+                            maxHeight: 260,
+                            overflowY: 'auto',
+                          }}>
                             {results.map((f, i) => (
                               <button key={`${f.id}_${i}`} onClick={() => { setSelected(f); setGrams(f.default_grams ? String(f.default_grams) : '100'); setResults([]) }} style={{
-                                width: '100%', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? '1px solid var(--border-light)' : 'none',
+                                width: '100%', background: 'none', border: 'none', borderBottom: i < results.length - 1 ? '1px solid var(--border-light, #f3f4f6)' : 'none',
                                 padding: '10px 13px', textAlign: 'left', cursor: 'pointer', font: 'inherit',
                               }}>
                                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 6 }}>
@@ -460,7 +485,8 @@ export default function MacroTrackerPage() {
                                 </p>
                               </button>
                             ))}
-                          </div>
+                          </div>,
+                          document.body
                         )}
 
                         {!selected && !searching && query.trim().length >= 2 && results.length === 0 && (
